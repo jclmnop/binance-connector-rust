@@ -12,13 +12,16 @@
  */
 
 #![allow(unused_imports)]
+use derive_builder::Builder;
 use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{collections::BTreeMap, sync::Arc};
 
 use crate::common::config::ConfigurationWebsocketApi;
-use crate::common::models::WebsocketApiResponse;
+use crate::common::models::{ParamBuildError, WebsocketApiResponse};
 use crate::common::utils::random_string;
+use crate::common::utils::remove_empty_value;
 use crate::common::websocket::{
     Subscription, WebsocketApi as WebsocketApiBase, WebsocketBase, WebsocketMessageSendOptions,
     WebsocketStream, create_stream_handler,
@@ -35,6 +38,64 @@ pub use handle::*;
 pub use models::*;
 
 const HAS_TIME_UNIT: bool = false;
+
+/// Request parameters for the [`session_logon`] operation.
+///
+/// This struct holds all of the inputs you can pass when calling
+/// [`session_logon`](#method.session_logon).
+#[derive(Clone, Debug, Builder, Default)]
+#[builder(pattern = "owned", build_fn(error = "ParamBuildError"))]
+pub struct SessionLogonParams {
+    /// Unique WebSocket request ID.
+    ///
+    /// This field is **optional.
+    #[builder(setter(into), default)]
+    pub id: Option<String>,
+    /// The value cannot be greater than `60000`
+    ///
+    /// This field is **optional.
+    #[builder(setter(into), default)]
+    pub recv_window: Option<i64>,
+}
+
+impl SessionLogonParams {
+    /// Create a builder for [`session_logon`].
+    ///
+    #[must_use]
+    pub fn builder() -> SessionLogonParamsBuilder {
+        SessionLogonParamsBuilder::default()
+    }
+}
+
+#[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SessionLogonResponseResult {
+    #[serde(rename = "apiKey", skip_serializing_if = "Option::is_none")]
+    pub api_key: Option<String>,
+    #[serde(rename = "authorizedSince", skip_serializing_if = "Option::is_none")]
+    pub authorized_since: Option<i64>,
+    #[serde(rename = "connectedSince", skip_serializing_if = "Option::is_none")]
+    pub connected_since: Option<i64>,
+    #[serde(rename = "returnRateLimits", skip_serializing_if = "Option::is_none")]
+    pub return_rate_limits: Option<bool>,
+    #[serde(rename = "serverTime", skip_serializing_if = "Option::is_none")]
+    pub server_time: Option<i64>,
+    #[serde(rename = "userDataStream", skip_serializing_if = "Option::is_none")]
+    pub user_data_stream: Option<bool>,
+}
+
+impl SessionLogonResponseResult {
+    #[must_use]
+    pub fn new() -> SessionLogonResponseResult {
+        SessionLogonResponseResult {
+            api_key: None,
+            authorized_since: None,
+            connected_since: None,
+            return_rate_limits: None,
+            server_time: None,
+            user_data_stream: None,
+        }
+    }
+}
 
 #[derive(Clone)]
 pub struct WebsocketApi {
@@ -206,6 +267,36 @@ impl WebsocketApi {
             .into_iter()
             .next()
             .ok_or(WebsocketError::NoResponse)
+    }
+
+    pub async fn session_logon(
+        &self,
+        params: SessionLogonParams,
+    ) -> anyhow::Result<Vec<WebsocketApiResponse<Box<SessionLogonResponseResult>>>> {
+        let SessionLogonParams { id, recv_window } = params;
+
+        let mut payload: BTreeMap<String, Value> = BTreeMap::new();
+        if let Some(value) = id {
+            payload.insert("id".to_string(), serde_json::json!(value));
+        }
+        if let Some(value) = recv_window {
+            payload.insert("recvWindow".to_string(), serde_json::json!(value));
+        }
+        let payload = remove_empty_value(payload);
+
+        let response = self
+            .websocket_api_base
+            .send_message::<Box<SessionLogonResponseResult>>(
+                "/session.logon".trim_start_matches('/'),
+                payload,
+                WebsocketMessageSendOptions::new().signed().session_logon(),
+            )
+            .await
+            .map_err(anyhow::Error::from)?
+            .into_iter()
+            .collect();
+
+        Ok(response)
     }
 
     /// Sends a signed WebSocket message with the specified method and payload.
